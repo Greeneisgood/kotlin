@@ -15,6 +15,9 @@ import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.psi.*
 import com.intellij.psi.search.GlobalSearchScope
 import com.intellij.psi.search.SearchScope
+import com.intellij.psi.search.searches.ClassInheritorsSearch
+import com.intellij.psi.search.searches.ClassInheritorsSearch.SearchParameters
+
 import com.intellij.psi.search.searches.ReferencesSearch
 import com.intellij.psi.util.PsiTreeUtil
 import com.intellij.refactoring.RefactoringBundle
@@ -23,9 +26,9 @@ import com.intellij.refactoring.util.MoveRenameUsageInfo
 import com.intellij.refactoring.util.NonCodeUsageInfo
 import com.intellij.refactoring.util.RefactoringUIUtil
 import com.intellij.usageView.UsageInfo
-import com.intellij.usageView.UsageViewTypeLocation
 import com.intellij.util.containers.MultiMap
 import org.jetbrains.kotlin.asJava.namedUnwrappedElement
+import org.jetbrains.kotlin.asJava.toLightClass
 import org.jetbrains.kotlin.asJava.toLightMethods
 import org.jetbrains.kotlin.builtins.KotlinBuiltIns
 import org.jetbrains.kotlin.descriptors.*
@@ -37,8 +40,13 @@ import org.jetbrains.kotlin.idea.caches.project.implementedModules
 import org.jetbrains.kotlin.idea.caches.resolve.*
 import org.jetbrains.kotlin.idea.caches.resolve.util.getJavaMemberDescriptor
 import org.jetbrains.kotlin.idea.caches.resolve.util.hasJavaResolutionFacade
+import org.jetbrains.kotlin.idea.caches.resolve.util.javaResolutionFacade
+import org.jetbrains.kotlin.idea.caches.resolve.util.resolveToDescriptor
 import org.jetbrains.kotlin.idea.codeInsight.DescriptorToSourceUtilsIde
+import org.jetbrains.kotlin.idea.core.getPackage
 import org.jetbrains.kotlin.idea.core.isInTestSourceContentKotlinAware
+import org.jetbrains.kotlin.idea.core.util.toPsiDirectory
+import org.jetbrains.kotlin.idea.core.util.toPsiFile
 import org.jetbrains.kotlin.idea.imports.importableFqName
 import org.jetbrains.kotlin.idea.project.TargetPlatformDetector
 import org.jetbrains.kotlin.idea.project.forcedTargetPlatform
@@ -49,6 +57,7 @@ import org.jetbrains.kotlin.idea.search.and
 import org.jetbrains.kotlin.idea.search.not
 import org.jetbrains.kotlin.idea.util.projectStructure.getModule
 import org.jetbrains.kotlin.idea.util.projectStructure.module
+import org.jetbrains.kotlin.js.resolve.diagnostics.findPsi
 import org.jetbrains.kotlin.lexer.KtTokens
 import org.jetbrains.kotlin.load.java.JavaDescriptorVisibilities
 import org.jetbrains.kotlin.name.FqName
@@ -61,10 +70,8 @@ import org.jetbrains.kotlin.renderer.DescriptorRenderer
 import org.jetbrains.kotlin.renderer.ParameterNameRenderingPolicy
 import org.jetbrains.kotlin.resolve.BindingContext
 import org.jetbrains.kotlin.resolve.DescriptorUtils
-import org.jetbrains.kotlin.resolve.descriptorUtil.fqNameOrNull
-import org.jetbrains.kotlin.resolve.descriptorUtil.getImportableDescriptor
-import org.jetbrains.kotlin.resolve.descriptorUtil.getSuperClassNotAny
-import org.jetbrains.kotlin.resolve.descriptorUtil.isSubclassOf
+import org.jetbrains.kotlin.resolve.descriptorUtil.*
+import org.jetbrains.kotlin.resolve.jvm.KotlinJavaPsiFacade
 import org.jetbrains.kotlin.resolve.lazy.BodyResolveMode
 import org.jetbrains.kotlin.resolve.lazy.descriptors.findPackageFragmentForFile
 import org.jetbrains.kotlin.resolve.source.KotlinSourceElement
@@ -521,44 +528,142 @@ class MoveConflictChecker(
         }
     }
 
+    @OptIn(ExperimentalStdlibApi::class)
+    private fun classMoveIsSafeForSealedHierarchy(classToMove: KtClassOrObject): String? {
+        fun tryGetPackageFromTargetContainer(): PsiPackage? {
+            val fqName = moveTarget.targetContainerFqName ?: return null
+            val module = moveTarget.getTargetModule(project) ?: return null
+            return KotlinJavaPsiFacade.getInstance(project).findPackage(fqName.asString(), GlobalSearchScope.moduleScope(module))
+        }
+
+        fun ClassDescriptor.listDirectSuperSealed(): List<ClassDescriptor> = buildList {
+            getSuperClassNotAny()?.takeIf { it.isSealed() }?.let { this.add(it) }
+            getSuperInterfaces().filter { it.isSealed() }.let { this.addAll(it) }
+        }
+
+        fun listSubclasses(classDescriptor: ClassDescriptor): List<ClassDescriptor> {
+            val sealedKtClass = classDescriptor.findPsi() as? KtClassOrObject ?: return emptyList()
+            val lightClass = sealedKtClass.toLightClass() ?: return emptyList()
+            val searchScope = GlobalSearchScope.projectScope(sealedKtClass.project)
+            val searchParameters = SearchParameters(lightClass, searchScope, false, true, false)
+
+            return ClassInheritorsSearch.search(searchParameters)
+                .map mapper@{
+                    val resolutionFacade = it.javaResolutionFacade() ?: return@mapper null
+                    it.resolveToDescriptor(resolutionFacade)
+                }.filterNotNull()
+                .sortedBy(ClassDescriptor::getName)
+        }
+
+        fun listSealedHierarchyMembers(memberInQuestion: ClassDescriptor): List<PsiElement> {
+
+            val visited = mutableSetOf<ClassDescriptor>()
+
+            fun listSealedRoots(memberDescriptor: ClassDescriptor, roots: MutableList<ClassDescriptor>) {
+                val directSuperSealed = memberDescriptor.listDirectSuperSealed()
+
+                for (superSealed in directSuperSealed) {
+                    val sizeBefore = roots.size
+                    listSealedRoots(superSealed, roots)
+                    if (sizeBefore == roots.size) // superSealed has no sealed parents
+                        roots.add(superSealed)
+                }
+
+                if (directSuperSealed.isEmpty() && memberDescriptor.isSealed())
+                    roots.add(memberDescriptor)
+            }
+
+            fun listTraversingDown(memberDescriptor: ClassDescriptor, members: MutableList<ClassDescriptor>) {
+                val alreadyVisited = !visited.add(memberDescriptor)
+                if (alreadyVisited)
+                    return
+
+                if (memberDescriptor != memberInQuestion)
+                    members.add(memberDescriptor)
+
+                // memberDescriptor.sealedSubclasses searches inside the package only
+                for (subclass in listSubclasses(memberDescriptor)) {
+                    if (subclass.isSealed())
+                        listTraversingDown(subclass, members)
+
+                    // might be already visited from another sealed root
+                    if (!visited.contains(subclass) && subclass != memberInQuestion)
+                        members.add(subclass)
+                }
+            }
+
+            val sealedRoots = mutableListOf<ClassDescriptor>()
+            listSealedRoots(memberInQuestion, sealedRoots)
+
+            val members = mutableListOf<ClassDescriptor>()
+            sealedRoots.forEach { listTraversingDown(it, members) }
+
+
+            return members.mapNotNull { it.findPsi() }
+        }
+
+        val classDescriptor = classToMove.resolveToDescriptorIfAny() ?: return null
+
+        val sealedParentDescriptors = classDescriptor.listDirectSuperSealed()
+
+        // not a part of sealed hierarchy?
+        if (!classDescriptor.isSealed() && sealedParentDescriptors.isEmpty())
+            return null
+
+        // standalone sealed class: no sealed parents, no descendants?
+        if (classDescriptor.isSealed() && sealedParentDescriptors.isEmpty() && listSubclasses(classDescriptor).isEmpty())
+            return null
+
+        // Ok, we're dealing with sealed hierarchy member
+        val otherHierarchyMembers = listSealedHierarchyMembers(classDescriptor)
+        assert(otherHierarchyMembers.isNotEmpty())
+
+        // Entire hierarchy is to be moved at once?
+        if (otherHierarchyMembers.all { isToBeMoved(it) })
+            return null
+
+        // Hierarchy might be broken (members reside in different packages) and we shouldn't prevent intention to fix it (quick-fix using
+        // Move exists). That is why it's ok to move the class to a package where at least one member of hierarchy resides. In case the
+        // hierarchy is fully correct all its members share the same package.
+
+        val targetPackage = moveTarget.targetFile?.toPsiDirectory(project)?.getPackage()
+            ?: moveTarget.targetFile?.toPsiFile(project)?.containingDirectory?.getPackage()
+            ?: tryGetPackageFromTargetContainer()
+            ?: return null
+
+        val className = classToMove.nameAsSafeName.asString()
+
+        if (otherHierarchyMembers.none { it.containingFile.containingDirectory.getPackage() == targetPackage }) {
+            val packageName = targetPackage.qualifiedName.takeIf { it.isNotEmpty() } ?: "default"
+            return "Sealed hierarchy of '$className' would be broken: none of the existing members reside in the " +
+                    "package '${packageName}' " +
+                    "of module '${moveTarget.getTargetModule(project)?.name}'"
+        }
+
+        // Ok, class joins at least one member of the hierarchy. But probably it leaves the package where other members still exist.
+        // It doesn't mean we should prevent such move but it might be good for the user to be aware of the situation.
+
+        val packageToMoveFrom = classToMove.containingFile.containingDirectory.getPackage()
+        if (targetPackage != packageToMoveFrom &&
+            otherHierarchyMembers.filter { it.containingFile.containingDirectory.getPackage() == packageToMoveFrom }
+                .any { !isToBeMoved(it) }
+        ) {
+            val packageName = packageToMoveFrom?.qualifiedName?.takeIf { it.isNotEmpty() } ?: "default"
+            return "Sealed hierarchy of '$className' would be broken: '${packageName}' package " +
+                    "of module '${moveTarget.getTargetModule(project)?.name}' " +
+                    "still contains its members"
+        }
+
+        return null
+    }
+
     private fun checkSealedClassMove(conflicts: MultiMap<PsiElement, String>) {
         val visited = HashSet<PsiElement>()
         for (elementToMove in elementsToMove) {
             if (!visited.add(elementToMove)) continue
             if (elementToMove !is KtClassOrObject) continue
-
-            val rootClass: KtClass
-            val rootClassDescriptor: ClassDescriptor
-            if (elementToMove is KtClass && elementToMove.isSealed()) {
-                rootClass = elementToMove
-                rootClassDescriptor = rootClass.resolveToDescriptorIfAny() ?: return
-            } else {
-                val classDescriptor = elementToMove.resolveToDescriptorIfAny() ?: return
-                val superClassDescriptor = classDescriptor.getSuperClassNotAny() ?: return
-                if (superClassDescriptor.modality != Modality.SEALED) return
-                rootClassDescriptor = superClassDescriptor
-                rootClass = rootClassDescriptor.source.getPsi() as? KtClass ?: return
-            }
-
-            val subclasses = rootClassDescriptor.sealedSubclasses.mapNotNull { it.source.getPsi() }
-            if (subclasses.isEmpty()) continue
-
-            visited.add(rootClass)
-            visited.addAll(subclasses)
-
-            if (isToBeMoved(rootClass) && subclasses.all { isToBeMoved(it) }) continue
-
-            val message = if (elementToMove == rootClass) {
-                KotlinBundle.message("text.sealed.class.0.must.be.moved.with.all.its.subclasses", rootClass.name.toString())
-            } else {
-                val type = ElementDescriptionUtil.getElementDescription(elementToMove, UsageViewTypeLocation.INSTANCE).capitalize()
-                KotlinBundle.message(
-                    "text.0.1.must.be.moved.with.sealed.parent.class.and.all.its.subclasses",
-                    type,
-                    rootClass.name.toString()
-                )
-            }
-            conflicts.putValue(elementToMove, message)
+            // todo: elementsToMove might be members of a single hierarchy - no need to check all members in that case
+            classMoveIsSafeForSealedHierarchy(elementToMove)?.let { conflicts.putValue(elementToMove, it) }
         }
     }
 

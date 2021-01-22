@@ -89,6 +89,31 @@ public class MultiModuleMoveTestGenerated extends AbstractMultiModuleMoveTest {
         runTest("idea/testData/refactoring/moveMultiModule/moveRefToLibTypeAliasImplementingLibExpectClass/moveRefToLibTypeAliasImplementingLibExpectClass.test");
     }
 
+    @TestMetadata("moveSealedCheckEntireHierarchy/moveSealedCheckEntireHierarchy.test")
+    public void testMoveSealedCheckEntireHierarchy_MoveSealedCheckEntireHierarchy() throws Exception {
+        runTest("idea/testData/refactoring/moveMultiModule/moveSealedCheckEntireHierarchy/moveSealedCheckEntireHierarchy.test");
+    }
+
+    @TestMetadata("moveSealedCheckNotMember/moveSealedCheckNotMember.test")
+    public void testMoveSealedCheckNotMember_MoveSealedCheckNotMember() throws Exception {
+        runTest("idea/testData/refactoring/moveMultiModule/moveSealedCheckNotMember/moveSealedCheckNotMember.test");
+    }
+
+    @TestMetadata("moveSealedCheckSingleSealed/moveSealedCheckSingleSealed.test")
+    public void testMoveSealedCheckSingleSealed_MoveSealedCheckSingleSealed() throws Exception {
+        runTest("idea/testData/refactoring/moveMultiModule/moveSealedCheckSingleSealed/moveSealedCheckSingleSealed.test");
+    }
+
+    @TestMetadata("moveSealedCheckTargetPackageHasMember/moveSealedCheckTargetPackageHasMember.test")
+    public void testMoveSealedCheckTargetPackageHasMember_MoveSealedCheckTargetPackageHasMember() throws Exception {
+        runTest("idea/testData/refactoring/moveMultiModule/moveSealedCheckTargetPackageHasMember/moveSealedCheckTargetPackageHasMember.test");
+    }
+
+    @TestMetadata("moveSealedCheckWithinPackage/moveSealedCheckWithinPackage.test")
+    public void testMoveSealedCheckWithinPackage_MoveSealedCheckWithinPackage() throws Exception {
+        runTest("idea/testData/refactoring/moveMultiModule/moveSealedCheckWithinPackage/moveSealedCheckWithinPackage.test");
+    }
+
     @TestMetadata("moveToModuleWithoutLibConflict/moveToModuleWithoutLibConflict.test")
     public void testMoveToModuleWithoutLibConflict_MoveToModuleWithoutLibConflict() throws Exception {
         runTest("idea/testData/refactoring/moveMultiModule/moveToModuleWithoutLibConflict/moveToModuleWithoutLibConflict.test");
