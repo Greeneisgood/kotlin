@@ -37,6 +37,12 @@ public class OptimizationBasicInterpreter extends Interpreter<BasicValue> implem
         super(API_VERSION);
     }
 
+
+    @Nullable
+    public StrictBasicValue newValueFrom(@NotNull BasicValue value) {
+        return newValue(value.getType());
+    }
+
     @Override
     @Nullable
     public StrictBasicValue newValue(@Nullable Type type) {
@@ -155,7 +161,7 @@ public class OptimizationBasicInterpreter extends Interpreter<BasicValue> implem
         if (insn.getOpcode() == Opcodes.AALOAD) {
             Type arrayType = value1.getType();
             if (arrayType != null && arrayType.getSort() == Type.ARRAY) {
-                return new StrictBasicValue(AsmUtil.correctElementType(arrayType));
+                return newValue(AsmUtil.correctElementType(arrayType));
             }
         }
 
@@ -359,8 +365,8 @@ public class OptimizationBasicInterpreter extends Interpreter<BasicValue> implem
         // if merge of two references then `lub` is java/lang/Object
         // arrays also are BasicValues with reference type's
         if (isReference(v) && isReference(w)) {
-            if (v == NULL_VALUE) return newValue(w.getType());
-            if (w == NULL_VALUE) return newValue(v.getType());
+            if (v == NULL_VALUE) return newValueFrom(w);
+            if (w == NULL_VALUE) return newValueFrom(v);
 
             return StrictBasicValue.REFERENCE_VALUE;
         }
