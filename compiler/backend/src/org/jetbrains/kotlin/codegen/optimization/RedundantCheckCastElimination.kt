@@ -16,6 +16,7 @@
 
 package org.jetbrains.kotlin.codegen.optimization
 
+import org.jetbrains.kotlin.codegen.AsmUtil
 import org.jetbrains.kotlin.codegen.inline.ReifiedTypeInliner
 import org.jetbrains.kotlin.codegen.optimization.common.OptimizationBasicInterpreter
 import org.jetbrains.kotlin.codegen.optimization.common.StrictBasicValue
@@ -97,11 +98,20 @@ class ReificationTrackerInterpreter : OptimizationBasicInterpreter() {
     }
 
     override fun unaryOperation(insn: AbstractInsnNode, value: BasicValue): BasicValue? {
-        if (CHECKCAST == insn.opcode && (value as? ReifiedBasicValue)?.isReified == true) {
-            isReified = true
+        if (CHECKCAST == insn.opcode) {
+            if ((value as? ReifiedBasicValue)?.isReified == true) {
+                isReified = true
+            }
         }
-        //in most cases it's previous instruction with marker (it's not necessary track flag for `T::class.java` that is processed in `newOperation`)
+        if (insn.opcode == Opcodes.ANEWARRAY && insn is TypeInsnNode && insn.desc == AsmTypes.ENUM_TYPE.internalName) {
+            //reified check for enumValuesOf
+            insn.previous?.previous?.let {
+                isReified = ReifiedTypeInliner.isOperationReifiedMarker(it)
+            }
+        }
+        //in most cases it's previous instruction with marker
         isReified = isReified or ReifiedTypeInliner.isOperationReifiedMarker(insn.previous)
+
 
         return super.unaryOperation(insn, value)
     }
