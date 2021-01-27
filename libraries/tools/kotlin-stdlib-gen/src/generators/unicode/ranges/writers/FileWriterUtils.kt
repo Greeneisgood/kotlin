@@ -28,6 +28,7 @@ internal fun FileWriter.writeIntArray(
         append(strategy.indentation + string)
     }
 
+    append(strategy.rangesAnnotation)
     appendWithIndentation("${strategy.rangesVisibilityModifier} val $name = intArrayOf(")
     for (i in elements.indices) {
         if (i % 20 == 0) {
