@@ -21,9 +21,11 @@ import org.jetbrains.kotlin.codegen.optimization.common.OptimizationBasicInterpr
 import org.jetbrains.kotlin.codegen.optimization.common.StrictBasicValue
 import org.jetbrains.kotlin.codegen.optimization.fixStack.top
 import org.jetbrains.kotlin.codegen.optimization.transformer.MethodTransformer
+import org.jetbrains.kotlin.resolve.jvm.AsmTypes
 import org.jetbrains.org.objectweb.asm.Opcodes
 import org.jetbrains.org.objectweb.asm.Type
 import org.jetbrains.org.objectweb.asm.tree.AbstractInsnNode
+import org.jetbrains.org.objectweb.asm.tree.MethodInsnNode
 import org.jetbrains.org.objectweb.asm.tree.MethodNode
 import org.jetbrains.org.objectweb.asm.tree.TypeInsnNode
 import org.jetbrains.org.objectweb.asm.tree.analysis.BasicValue
@@ -85,13 +87,21 @@ class ReificationTrackerInterpreter : OptimizationBasicInterpreter() {
 
     private var isReified = false
 
+    override fun naryOperation(insn: AbstractInsnNode, values: MutableList<out BasicValue>?): BasicValue? {
+        if (insn is MethodInsnNode && AsmTypes.ENUM_TYPE.internalName == insn.owner) {
+            if (insn.name == "valueOf") {
+                isReified = insn.previous?.previous?.previous?.let { ReifiedTypeInliner.isOperationReifiedMarker(it) } ?: false
+            }
+        }
+        return super.naryOperation(insn, values)
+    }
+
     override fun unaryOperation(insn: AbstractInsnNode, value: BasicValue): BasicValue? {
         if (CHECKCAST == insn.opcode && (value as? ReifiedBasicValue)?.isReified == true) {
             isReified = true
         }
-        //in most cases it's previous instruction with marker
+        //in most cases it's previous instruction with marker (it's not necessary track flag for `T::class.java` that is processed in `newOperation`)
         isReified = isReified or ReifiedTypeInliner.isOperationReifiedMarker(insn.previous)
-        //except enum
 
         return super.unaryOperation(insn, value)
     }
